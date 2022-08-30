@@ -1,19 +1,4 @@
-/*
- * Tencent is pleased to support the open source community by making TKEStack available.
- *
- * Copyright (C) 2012-2019 Tencent. All Rights Reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License"); you may not use
- * this file except in compliance with the License. You may obtain a copy of the
- * License at
- *
- * https://opensource.org/licenses/Apache-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
- * WARRANTIES OF ANY KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations under the License.
- */
+//go:build !linux
 
 package vitrual_manager
 
@@ -28,115 +13,17 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
+	"google.golang.org/grpc"
+	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/klog"
 	vcudaapi "tkestack.io/gpu-manager/pkg/api/runtime/vcuda"
 	"tkestack.io/gpu-manager/pkg/config"
-	"tkestack.io/gpu-manager/pkg/device/nvidia"
 	"tkestack.io/gpu-manager/pkg/runtime"
 	"tkestack.io/gpu-manager/pkg/services/response"
 	"tkestack.io/gpu-manager/pkg/services/watchdog"
 	"tkestack.io/gpu-manager/pkg/types"
 	"tkestack.io/gpu-manager/pkg/utils"
-
-	"google.golang.org/grpc"
-	"k8s.io/apimachinery/pkg/util/wait"
-	"k8s.io/klog"
-)
-
-//#include <stdint.h>
-//#include <sys/types.h>
-//#include <sys/stat.h>
-//#include <fcntl.h>
-//#include <string.h>
-//#include <sys/file.h>
-//#include <time.h>
-//#include <stdlib.h>
-//#include <unistd.h>
-//
-//#ifndef NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE
-//#define NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE 16
-//#endif
-//
-//#ifndef FILENAME_MAX
-//#define FILENAME_MAX 4096
-//#endif
-//
-//struct version_t {
-//  int major;
-//  int minor;
-//} __attribute__((packed, aligned(8)));
-//
-//struct resource_data_t {
-//  char pod_uid[48];
-//  int limit;
-//  char occupied[4044];
-//  char container_name[FILENAME_MAX];
-//  char bus_id[NVML_DEVICE_PCI_BUS_ID_BUFFER_SIZE];
-//  uint64_t gpu_memory;
-//  int utilization;
-//  int hard_limit;
-//  struct version_t driver_version;
-//  int enable;
-//} __attribute__((packed, aligned(8)));
-//
-//int setting_to_disk(const char* filename, struct resource_data_t* data) {
-//  int fd = 0;
-//  int wsize = 0;
-//  int ret = 0;
-//
-//  fd = open(filename, O_CREAT | O_TRUNC | O_WRONLY, 00777);
-//  if (fd == -1) {
-//    return 1;
-//  }
-//
-//  wsize = (int)write(fd, (void*)data, sizeof(struct resource_data_t));
-//  if (wsize != sizeof(struct resource_data_t)) {
-//    ret = 2;
-//	goto DONE;
-//  }
-//
-//DONE:
-//  close(fd);
-//
-//  return ret;
-//}
-//
-//int pids_to_disk(const char* filename, int* data, int size) {
-//  int fd = 0;
-//  int wsize = 0;
-//  struct timespec wait = {
-//	.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000,
-//  };
-//  int ret = 0;
-//
-//  fd = open(filename, O_CREAT | O_TRUNC | O_WRONLY, 00777);
-//  if (fd == -1) {
-//    return 1;
-//  }
-//
-//  while (flock(fd, LOCK_EX)) {
-//    nanosleep(&wait, NULL);
-//  }
-//
-//  wsize = (int)write(fd, (void*)data, sizeof(int) * size);
-//  if (wsize != sizeof(int) * size) {
-//	ret = 2;
-//    goto DONE;
-//  }
-//
-//DONE:
-//  flock(fd, LOCK_UN);
-//  close(fd);
-//
-//  return ret;
-//}
-import "C"
-
-const (
-	PIDS_CONFIG_NAME       = "pids.config"
-	CONTROLLER_CONFIG_NAME = "vcuda.config"
-	DEFAULT_DIR_MODE       = 0777
 )
 
 //VirtualManager manages vGPUs
@@ -471,10 +358,14 @@ func (vm *VirtualManager) RegisterVDevice(_ context.Context, req *vcudaapi.VDevi
 	return vm.registerVDeviceWithContainerId(podUID, contID)
 }
 
+func C_pids_to_disk(filename string, pids []int) error {
+	return nil
+}
+
 func (vm *VirtualManager) writePidFile(filename string, contID string) error {
 	klog.V(2).Infof("Write %s", filename)
-	cFileName := C.CString(filename)
-	defer C.free(unsafe.Pointer(cFileName))
+	// cFileName := C.CString(filename)
+	// defer C.free(unsafe.Pointer(cFileName))
 
 	pidsInContainer, err := vm.containerRuntimeManager.GetPidsInContainers(contID)
 	if err != nil {
@@ -483,15 +374,17 @@ func (vm *VirtualManager) writePidFile(filename string, contID string) error {
 	if len(pidsInContainer) == 0 {
 		return fmt.Errorf("empty pids")
 	}
-	pids := make([]C.int, len(pidsInContainer))
+	// pids := make([]C.int, len(pidsInContainer))
+	// for i := range pidsInContainer {
+	// pids[i] = C.int(pidsInContainer[i])
+	// }
 
-	for i := range pidsInContainer {
-		pids[i] = C.int(pidsInContainer[i])
+	if C_pids_to_disk(filename, pidsInContainer); err != nil {
+		return fmt.Errorf("can't sink pids file, %+v", err)
 	}
-
-	if C.pids_to_disk(cFileName, &pids[0], (C.int)(len(pids))) != 0 {
-		return fmt.Errorf("can't sink pids file")
-	}
+	// if C.pids_to_disk(cFileName, &pids[0], (C.int)(len(pids))) != 0 {
+	// 	return fmt.Errorf("can't sink pids file")
+	// }
 
 	return nil
 }
@@ -536,38 +429,40 @@ func (vm *VirtualManager) writeConfigFile(filename string, podUID, name string) 
 				memory := (&memoryLimit).Value() * types.MemoryBlockSize
 
 				if err := func() error {
-					var vcudaConfig C.struct_resource_data_t
+					// TODO
+					fmt.Sprintf("%v,%v,%v", hasLimitCore, cores, memory)
+					// var vcudaConfig C.struct_resource_data_t
 
-					cPodUID := C.CString(podUID)
-					cContName := C.CString(name)
-					cFileName := C.CString(filename)
+					// cPodUID := C.CString(podUID)
+					// cContName := C.CString(name)
+					// cFileName := C.CString(filename)
 
-					defer C.free(unsafe.Pointer(cPodUID))
-					defer C.free(unsafe.Pointer(cContName))
-					defer C.free(unsafe.Pointer(cFileName))
+					// defer C.free(unsafe.Pointer(cPodUID))
+					// defer C.free(unsafe.Pointer(cContName))
+					// defer C.free(unsafe.Pointer(cFileName))
 
-					C.strcpy(&vcudaConfig.pod_uid[0], (*C.char)(unsafe.Pointer(cPodUID)))
-					C.strcpy(&vcudaConfig.container_name[0], (*C.char)(unsafe.Pointer(cContName)))
-					vcudaConfig.gpu_memory = C.uint64_t(memory)
-					vcudaConfig.utilization = C.int(cores)
-					vcudaConfig.hard_limit = 1
-					vcudaConfig.driver_version.major = C.int(types.DriverVersionMajor)
-					vcudaConfig.driver_version.minor = C.int(types.DriverVersionMinor)
+					// C.strcpy(&vcudaConfig.pod_uid[0], (*C.char)(unsafe.Pointer(cPodUID)))
+					// C.strcpy(&vcudaConfig.container_name[0], (*C.char)(unsafe.Pointer(cContName)))
+					// vcudaConfig.gpu_memory = C.uint64_t(memory)
+					// vcudaConfig.utilization = C.int(cores)
+					// vcudaConfig.hard_limit = 1
+					// vcudaConfig.driver_version.major = C.int(types.DriverVersionMajor)
+					// vcudaConfig.driver_version.minor = C.int(types.DriverVersionMinor)
 
-					if cores >= nvidia.HundredCore {
-						vcudaConfig.enable = 0
-					} else {
-						vcudaConfig.enable = 1
-					}
+					// if cores >= nvidia.HundredCore {
+					// 	vcudaConfig.enable = 0
+					// } else {
+					// 	vcudaConfig.enable = 1
+					// }
 
-					if hasLimitCore {
-						vcudaConfig.hard_limit = 0
-						vcudaConfig.limit = C.int(limitCores)
-					}
+					// if hasLimitCore {
+					// 	vcudaConfig.hard_limit = 0
+					// 	vcudaConfig.limit = C.int(limitCores)
+					// }
 
-					if C.setting_to_disk(cFileName, &vcudaConfig) != 0 {
-						return fmt.Errorf("can't sink config %s", filename)
-					}
+					// if C.setting_to_disk(cFileName, &vcudaConfig) != 0 {
+					// 	return fmt.Errorf("can't sink config %s", filename)
+					// }
 
 					return nil
 				}(); err != nil {

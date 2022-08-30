@@ -1,3 +1,5 @@
+//go:build !linux
+
 package cgroup
 
 import (
@@ -5,7 +7,7 @@ import (
 	"path"
 	"strings"
 
-	cgroupsystemd "github.com/opencontainers/runc/libcontainer/cgroups/systemd"
+	// cgroupsystemd "github.com/opencontainers/runc/libcontainer/cgroups/systemd"
 
 	"k8s.io/klog"
 )
@@ -44,21 +46,7 @@ func NewCgroupName(base CgroupName, components ...string) CgroupName {
 // This function always expands the systemd name into the cgroupfs form. If only
 // the last part is needed, use path.Base(...) on it to discard the rest.
 func (cgroupName CgroupName) ToSystemd() string {
-	if len(cgroupName) == 0 || (len(cgroupName) == 1 && cgroupName[0] == "") {
-		return "/"
-	}
-	newparts := []string{}
-	for _, part := range cgroupName {
-		part = escapeSystemdCgroupName(part)
-		newparts = append(newparts, part)
-	}
-
-	result, err := cgroupsystemd.ExpandSlice(strings.Join(newparts, "-") + systemdSuffix)
-	if err != nil {
-		// Should never happen...
-		panic(fmt.Errorf("error converting cgroup name [%v] to systemd format: %v", cgroupName, err))
-	}
-	return result
+	return ""
 }
 
 func escapeSystemdCgroupName(part string) string {
